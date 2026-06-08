@@ -5,3 +5,4 @@ confluent_kafka==2.6.1
 omegaconf>=2.3.0
 psutil>=7.0.0
 requests>=2.32.3
+docker==7.1.0
