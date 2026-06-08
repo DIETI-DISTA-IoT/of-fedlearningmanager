@@ -32,7 +32,7 @@ RUN pip install --upgrade typing_extensions
 
 # Install dependencies from the build context (submodule checkout on disk).
 # This layer is cached when using scache-nolib; re-run only when using scache.
-COPY fedlearningmanager/requirements.txt /tmp/requirements.txt
+COPY flmanager/requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
 # Code-only bust: pass CODE_BUST=<timestamp> to re-run only the git clones, keeping pip cached.
