@@ -1,0 +1,6 @@
+numpy==2.2.1
+scikit-learn>=1.6.1
+flask>=3.1.0
+confluent_kafka==2.6.1
+omegaconf>=2.3.0
+psutil>=7.0.0
