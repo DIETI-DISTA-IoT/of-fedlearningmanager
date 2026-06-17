@@ -9,6 +9,7 @@ import random
 import pickle
 import json
 import threading
+import hashlib
 
 import torch
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
@@ -30,6 +31,24 @@ aggregation_functions = {
     "fedmedian": fed_median,
     "fedprox": fed_prox,
 }
+
+
+def _model_signature(state_dict):
+    """Compact, deterministic fingerprint of a model's parameters (for logging).
+
+    Returns (n_params, n_tensors, sha10, keys). sha10 hashes the 'key:shape'
+    list, so two state-dicts share a signature iff they have the same parameter
+    names AND shapes — i.e. the same architecture/topology. Never raises.
+    """
+    try:
+        items = [(k, tuple(v.shape)) for k, v in state_dict.items()]
+        n_params = int(sum(v.numel() for v in state_dict.values()))
+        canon = ';'.join('%s:%s' % (k, 'x'.join(map(str, shp))) for k, shp in items)
+        sha = hashlib.sha1(canon.encode()).hexdigest()[:10]
+        return n_params, len(items), sha, [k for k, _ in items]
+    except Exception as exc:  # diagnostics must never crash aggregation
+        return -1, -1, 'ERR(%r)' % exc, []
+
 
 
 def _delete_topics(kafka_broker_url, topics, logger):
@@ -206,6 +225,38 @@ class FederatedLearningManager:
             self.logger.info(f"Aggregating the weights from {len(self.weights_buffer)} vehicles.")
             aggregation_function = self.aggregation_function
 
+            # ───────────── aggregation diagnostics (logging only) ─────────────
+            strategy = kwargs.get('aggregation_strategy')
+            self._agg_round = getattr(self, '_agg_round', 0) + 1
+            self.logger.info("========== FL AGGREGATION ROUND %d ==========" % self._agg_round)
+            self.logger.info(
+                "strategy=%r | resolved=%s | kind=%s | model_type_cfg=%s"
+                % (strategy,
+                   getattr(aggregation_function, '__name__', type(aggregation_function).__name__),
+                   'CLASS (instantiated on each call)' if isinstance(aggregation_function, type)
+                   else type(aggregation_function).__name__,
+                   kwargs.get('model_type', '<not in FL config>')))
+            _g_params, _g_n, _g_sha, _g_keys = _model_signature(self.global_model.state_dict())
+            self.logger.info("GLOBAL model: class=%s n_tensors=%d n_params=%d sig=%s"
+                             % (type(self.global_model).__name__, _g_n, _g_params, _g_sha))
+            _client_shas = []
+            for _topic, _buf in self.weights_buffer.items():
+                _c_params, _c_n, _c_sha, _c_keys = _model_signature(_buf.get())
+                _client_shas.append(_c_sha)
+                self.logger.info("CLIENT %-24s n_tensors=%d n_params=%d sig=%s -> %s"
+                                 % (_buf.label, _c_n, _c_params, _c_sha,
+                                    'MATCHES global' if _c_sha == _g_sha else 'DIFFERS from global !!'))
+                if _c_sha != _g_sha:
+                    self.logger.warning("  topology mismatch %s: client-only keys=%s | global-only keys=%s"
+                                        % (_buf.label,
+                                           [k for k in _c_keys if k not in _g_keys][:6],
+                                           [k for k in _g_keys if k not in _c_keys][:6]))
+            self.logger.info("client signatures: %d distinct across %d clients -> %s"
+                             % (len(set(_client_shas)), len(_client_shas),
+                                'HOMOGENEOUS' if len(set(_client_shas)) == 1 else 'HETEROGENEOUS'))
+            # ──────────────────────────────────────────────────────────────────
+
+
             for buffer in self.weights_buffer.values():
                 candidate_state_dict = buffer.get()
                 if any(torch.isnan(param).any() for param in candidate_state_dict.values()):
@@ -228,6 +279,17 @@ class FederatedLearningManager:
                 buffer.pop()
             self.global_model.load_state_dict(aggregated_state_dict)
             self.weights_reporter.push_weights(self.global_model.state_dict())
+
+            # ───────────── aggregation diagnostics (logging only) ─────────────
+            if isinstance(aggregation_function, FedYogi):
+                self.logger.info("FedYogi INSTANCE ran: step=%s | moments_initialised=%s"
+                                 % (aggregation_function.step, aggregation_function.moment_1 is not None))
+            _a_params, _, _a_sha, _ = _model_signature(aggregated_state_dict)
+            self.logger.info("AGGREGATION OK via '%s' -> pushed global weights "
+                             "(n_params=%d sig=%s) round=%d"
+                             % (kwargs.get('aggregation_strategy'), _a_params, _a_sha, self._agg_round))
+            self.logger.info("=============================================")
+            # ──────────────────────────────────────────────────────────────────
         else:
             self.logger.info(f"Waiting for more data to aggregate the weights.")
 
