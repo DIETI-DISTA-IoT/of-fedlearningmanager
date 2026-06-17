@@ -16,7 +16,7 @@ from confluent_kafka import Consumer, KafkaError
 from confluent_kafka.admin import AdminClient
 
 from OpenFAIR.container_api import ContainerAPI
-from modules import MLP
+from modules import build_model
 from preprocessing import GenericBuffer
 from reporting import WeightsReporter, GlobalMetricsReporter
 from aggregation import federated_averaging, FedYogi, fed_median, fed_prox
@@ -56,9 +56,28 @@ class FederatedLearningManager:
         self.aggregation_interval_secs = args['aggregation_interval_secs']
         self.kafka_broker_url = args['kafka_broker_url']
 
-        self.global_model = MLP(**args)
+        self.global_model = build_model(**args)
         self.global_model.initialize_weights(args['initialization_strategy'])
-        self.logger.info(f"Global model initialized using {args['initialization_strategy']} initialization.")
+        self.logger.info(
+            f"Global model ({str(args.get('model_type', 'mlp')).lower()}) initialized "
+            f"using {args['initialization_strategy']} initialization."
+        )
+
+        # Resolve the aggregation strategy once, per FL session.  Stateful
+        # strategies (e.g. FedYogi) are registered as classes and must be
+        # instantiated so the call routes through ``__call__`` instead of
+        # ``__init__``; instantiating here (rather than at module import)
+        # also gives each FL session — and each architecture switch — a fresh
+        # optimizer state instead of leaking buffers across runs.
+        strategy = args.get('aggregation_strategy')
+        try:
+            aggregator = aggregation_functions[strategy]
+        except KeyError:
+            raise ValueError(
+                f"Unknown aggregation strategy '{strategy}'. "
+                f"Available: {sorted(aggregation_functions)}"
+            )
+        self.aggregation_function = aggregator() if isinstance(aggregator, type) else aggregator
 
         self.admin_client = AdminClient({'bootstrap.servers': args['kafka_broker_url']})
         _delete_topics(self.kafka_broker_url, ["global_weights"], self.logger)
@@ -119,7 +138,12 @@ class FederatedLearningManager:
             self._stop_event.wait(timeout=kwargs.get('aggregation_interval_secs'))
             if self.stop_threads:
                 break
-            self.aggregate_weights(**kwargs)
+            # Guard the round so a single failure logs a traceback and retries
+            # instead of silently terminating the aggregation thread for the run.
+            try:
+                self.aggregate_weights(**kwargs)
+            except Exception:
+                self.logger.exception("Aggregation round failed; will retry on next interval.")
 
 
     def consume_weights_data(self, **kwargs):
@@ -180,7 +204,7 @@ class FederatedLearningManager:
 
         if all([len(buffer) > 0 for buffer in self.weights_buffer.values()]):
             self.logger.info(f"Aggregating the weights from {len(self.weights_buffer)} vehicles.")
-            aggregation_function = aggregation_functions[kwargs.get('aggregation_strategy')]
+            aggregation_function = self.aggregation_function
 
             for buffer in self.weights_buffer.values():
                 candidate_state_dict = buffer.get()
