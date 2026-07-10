@@ -31,6 +31,9 @@ class WeightsReporter:
 
 
 class GlobalMetricsReporter:
+    # Publishes to global_metrics, which Wandber subscribes to directly for
+    # W&B logging (aggregation-round diagnostics). Never subject to simulated
+    # packet loss — only the global_weights actually used for training are.
     def __init__(self, logger, **kwargs):
         conf_prod_weights={
         'bootstrap.servers': kwargs.get('kafka_broker_url'),  # Kafka broker URL
@@ -38,16 +41,11 @@ class GlobalMetricsReporter:
         'value.serializer': lambda v, ctx: json.dumps(v)
          }
         self.producer = SerializingProducer(conf_prod_weights)
-        self.packet_loss = PacketLossSimulator(kwargs.get('packet_loss_rate', 0.1))
         self.logger = logger
 
     def report_metrics(self, metrics):
         global_metrics_topic=f"global_metrics"
 
-        if self.packet_loss.should_drop():
-            self.logger.debug(f"[packet-loss] dropped global metrics message "
-                              f"(rate={self.packet_loss.packet_loss_rate})")
-            return
         try:
             self.producer.produce(topic=global_metrics_topic, value=metrics)
             self.producer.flush()

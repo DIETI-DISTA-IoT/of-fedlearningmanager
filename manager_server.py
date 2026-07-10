@@ -330,9 +330,10 @@ class FedLearningManagerAPI(ContainerAPI):
     def get_detailed_status(self):
         status = {"federated_learning_running": self.fl_instance is not None}
         if self.fl_instance is not None:
+            # global_metrics is W&B-bound and never lossy (see reporting.py);
+            # only global_weights (the actual training signal) carries loss.
             status["packet_loss"] = {
                 "global_weights": self.fl_instance.weights_reporter.packet_loss.stats(),
-                "global_metrics": self.fl_instance.global_metrics_reporter.packet_loss.stats(),
             }
         return status
 
