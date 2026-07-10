@@ -328,7 +328,13 @@ class FedLearningManagerAPI(ContainerAPI):
 
 
     def get_detailed_status(self):
-        return {"federated_learning_running": self.fl_instance is not None}
+        status = {"federated_learning_running": self.fl_instance is not None}
+        if self.fl_instance is not None:
+            status["packet_loss"] = {
+                "global_weights": self.fl_instance.weights_reporter.packet_loss.stats(),
+                "global_metrics": self.fl_instance.global_metrics_reporter.packet_loss.stats(),
+            }
+        return status
 
 
     def handle_command(self, command, params):
