@@ -335,6 +335,9 @@ class FedLearningManagerAPI(ContainerAPI):
             status["packet_loss"] = {
                 "global_weights": self.fl_instance.weights_reporter.packet_loss.stats(),
             }
+            status["network_delay"] = {
+                "global_weights": self.fl_instance.weights_reporter.network_delay.stats(),
+            }
         return status
 
 

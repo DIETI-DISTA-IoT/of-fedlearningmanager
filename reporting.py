@@ -4,6 +4,7 @@ import pickle
 import json
 
 from OpenFAIR.packet_loss import PacketLossSimulator
+from OpenFAIR.network_delay import NetworkDelaySimulator
 
 class WeightsReporter:
     def __init__(self, logger, **kwargs):
@@ -14,6 +15,11 @@ class WeightsReporter:
          }
         self.producer = SerializingProducer(conf_prod_weights)
         self.packet_loss = PacketLossSimulator(kwargs.get('packet_loss_rate', 0.1))
+        # Simulated latency+jitter on the outbound global_weights update (same
+        # policy as packet_loss — global_metrics is W&B-bound and never delayed,
+        # see GlobalMetricsReporter).
+        self.network_delay = NetworkDelaySimulator(
+            kwargs.get('delay_mean_ms', 0.0), kwargs.get('jitter_std_ms', 0.0))
         self.logger = logger
 
     def push_weights(self, weights):
@@ -22,12 +28,16 @@ class WeightsReporter:
             self.logger.debug(f"[packet-loss] dropped global weights update "
                               f"(rate={self.packet_loss.packet_loss_rate})")
             return
-        try:
-            self.producer.produce(topic=weights_topic, value=weights)
-            self.producer.flush()
-            self.logger.info(f"Sent global weights to topic: {weights_topic}")
-        except Exception as e:
-            self.logger.error(f"Failed to send global weights: {e}")
+
+        def _deliver():
+            try:
+                self.producer.produce(topic=weights_topic, value=weights)
+                self.producer.flush()
+                self.logger.info(f"Sent global weights to topic: {weights_topic}")
+            except Exception as e:
+                self.logger.error(f"Failed to send global weights: {e}")
+
+        self.network_delay.send(_deliver)
 
 
 class GlobalMetricsReporter:
